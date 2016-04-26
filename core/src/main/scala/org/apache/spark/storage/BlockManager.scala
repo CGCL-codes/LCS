@@ -20,6 +20,7 @@ package org.apache.spark.storage
 import java.io._
 import java.nio.{ByteBuffer, MappedByteBuffer}
 
+import scala.collection.mutable
 import scala.collection.mutable.{ArrayBuffer, HashMap}
 import scala.concurrent.{ExecutionContext, Await, Future}
 import scala.concurrent.duration._
@@ -75,6 +76,13 @@ private[spark] class BlockManager(
   val diskBlockManager = new DiskBlockManager(this, conf)
 
   private val blockInfo = new TimeStampedHashMap[BlockId, BlockInfo]
+
+  val blockExInfo = new java.util.HashMap[RDDBlockId, BlockExInfo]
+
+  val inMemBlockExInfo = new java.util.TreeSet[BlockExInfo]
+
+  var stageExInfos: mutable.HashMap[Int, StageExInfo] = new mutable.HashMap[Int, StageExInfo]
+  var currentStage: Int = -1
 
   private val futureExecutionContext = ExecutionContext.fromExecutorService(
     ThreadUtils.newDaemonCachedThreadPool("block-manager-future", 128))
@@ -1015,6 +1023,17 @@ private[spark] class BlockManager(
       data: () => Either[Array[Any], ByteBuffer]): Option[BlockStatus] = {
 
     logInfo(s"Dropping block $blockId from memory")
+
+    if (blockId.isRDD) {
+      logEarne("change exist status of " + blockId + " to 0")
+      val curValue = blockExInfo.get(blockId)
+      curValue.isExist = 0
+      inMemBlockExInfo.synchronized {
+        logEarne("Remove " + blockId + " from inMemBlockExInfo")
+        inMemBlockExInfo.remove(curValue)
+      }
+    }
+
     val info = blockInfo.get(blockId).orNull
 
     // If the block has not already been dropped
@@ -1073,11 +1092,71 @@ private[spark] class BlockManager(
 
   /**
    * Remove all blocks belonging to the given RDD.
-   * @return The number of blocks removed.
+    *
+    * @return The number of blocks removed.
    */
   def removeRdd(rddId: Int): Int = {
     // TODO: Avoid a linear scan by creating another mapping of RDD.id to blocks.
     logInfo(s"Removing RDD $rddId")
+
+
+    logEarne("Now we in Stage: " + currentStage)
+    logEarne(" and the depMap is: " + stageExInfos(currentStage).depMap)
+
+    var targetRdd: Int = -1
+    stageExInfos(currentStage).depMap.foreach { cur =>
+      if (cur._2.contains(rddId)) {
+        targetRdd = cur._1
+      }
+    }
+
+    logEarne("Now we set targetRDD to: " + targetRdd + " becasue we removeRdd: " + rddId)
+
+    val iter = blockExInfo.entrySet().iterator()
+
+
+    while (iter.hasNext) {
+      val cur = iter.next()
+      val curId = cur.getKey.getRddId
+      val splitIndex = cur.getKey.getRddSplitIndex
+      if (curId == targetRdd) {
+        inMemBlockExInfo.synchronized {
+          if (inMemBlockExInfo.contains(cur.getValue)) {
+            logEarne("Remove " + cur.getKey + " from inMemBlockExInfo")
+            inMemBlockExInfo.remove(cur.getValue)
+            cur.getValue.creatCost = cur.getValue.creatCost + blockExInfo.get(
+              new RDDBlockId(rddId, splitIndex)).creatCost
+            cur.getValue.norCost = cur.getValue.
+              creatCost.toDouble / (cur.getValue.size / 1024 / 1024)
+            logEarne("Add " + cur.getValue.blockId + " to inMemBlockExInfo")
+            inMemBlockExInfo.add(cur.getValue)
+
+          } else {
+            cur.getValue.creatCost = cur.getValue.creatCost + blockExInfo.get(
+              new RDDBlockId(rddId, splitIndex)).creatCost
+            cur.getValue.norCost = cur.getValue.
+              creatCost.toDouble / (cur.getValue.size / 1024 / 1024)
+          }
+        }
+
+        logEarne("Due to Removing RDD " + rddId + " we have to change rdd_" + curId + "_"
+          + splitIndex + " ctime")
+      } else if (curId == rddId) {
+        val curValue = blockExInfo.get(new RDDBlockId(rddId, splitIndex))
+        curValue.isExist = 0
+        inMemBlockExInfo.synchronized {
+          logEarne("Remove " + curValue.blockId + " from inMemBlockExInfo")
+          inMemBlockExInfo.remove(curValue)
+        }
+        logEarne("Due to Removing RDD " + rddId + " we now change " + curId + "_"
+          + splitIndex + " to not exist and TreeSet have size " + inMemBlockExInfo.size())
+      }
+    }
+
+    // TODO
+    // we have to update the create cost of sonRDD when removing parRDD and sonRDD do not at remote
+
+
     val blocksToRemove = blockInfo.keys.flatMap(_.asRDDId).filter(_.rddId == rddId)
     blocksToRemove.foreach { blockId => removeBlock(blockId, tellMaster = false) }
     blocksToRemove.size

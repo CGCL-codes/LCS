@@ -48,7 +48,10 @@ private[spark] abstract class Task[T](
     val stageId: Int,
     val stageAttemptId: Int,
     val partitionId: Int,
-    internalAccumulators: Seq[Accumulator[Long]]) extends Serializable {
+    internalAccumulators: Seq[Accumulator[Long]],
+    var depMap: HashMap[Int, Set[Int]] = new HashMap[Int, Set[Int]],
+    var curRunningRddMap: HashMap[Int, Set[Int]] =
+      new HashMap[Int, Set[Int]]) extends Serializable {
 
   /**
    * The key of the Map is the accumulator id and the value of the Map is the latest accumulator

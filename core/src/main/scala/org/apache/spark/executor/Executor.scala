@@ -204,6 +204,13 @@ private[spark] class Executor(
           throw new TaskKilledException
         }
 
+        logEarne("Task " + taskId + " is in Stage " + task.stageId + " and the depMap is " +
+          task.depMap)
+        if (!env.blockManager.stageExInfos.contains(task.stageId)) {
+          env.blockManager.stageExInfos.put(task.stageId,
+            new StageExInfo(task.stageId, null, null, task.depMap, task.curRunningRddMap))
+        }
+
         logDebug("Task " + taskId + "'s epoch is " + task.epoch)
         env.mapOutputTracker.updateEpoch(task.epoch)
 

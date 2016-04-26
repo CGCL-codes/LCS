@@ -66,6 +66,41 @@ private[spark] class CacheManager(blockManager: BlockManager) extends Logging {
         // Otherwise, we have to load the partition ourselves
         try {
           logInfo(s"Partition $key not found, computing it")
+
+          val blockManager = SparkEnv.get.blockManager
+
+          if (!blockManager.blockExInfo.containsKey(key)) {
+            blockManager.blockExInfo.put(key, new BlockExInfo(key))
+          }
+
+          blockManager.stageExInfos.get(blockManager.currentStage) match {
+            case Some(curStageExInfo) =>
+              var parExist = true
+              for (par <- curStageExInfo.depMap(rdd.id)) {
+                val parBlockId = new RDDBlockId(par, partition.index)
+                if (blockManager.blockExInfo.containsKey(parBlockId) &&
+                  blockManager.blockExInfo.get(parBlockId).isExist
+                    == 1) {
+                  // par is exist
+
+                } else {
+                  // par not exist now, add this key to it's par's watching set
+                  parExist = false
+                  if (!blockManager.blockExInfo.containsKey(parBlockId)) {
+                    blockManager.blockExInfo.put(parBlockId, new BlockExInfo(parBlockId))
+                  }
+                  blockManager.blockExInfo.get(parBlockId).sonSet += key
+                }
+              }
+              if (parExist) {
+                // par are all exist so we update this rdd's start time
+                logEarne("par all exist, store start time of " + key)
+                blockManager.blockExInfo.get(key).creatStartTime = System.currentTimeMillis()
+              }
+            case None =>
+              logEarne("Some Thing Wrong")
+          }
+
           val computedValues = rdd.computeOrReadCheckpoint(partition, context)
 
           // If the task is running locally, do not persist the result

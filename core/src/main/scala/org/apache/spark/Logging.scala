@@ -59,6 +59,10 @@ trait Logging {
     if (log.isInfoEnabled) log.info(msg)
   }
 
+  protected def logEarne(msg: => String) {
+    if (log.isInfoEnabled) log.info("ERNEST " + msg)
+  }
+
   protected def logDebug(msg: => String) {
     if (log.isDebugEnabled) log.debug(msg)
   }

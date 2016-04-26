@@ -385,6 +385,31 @@ private[spark] class MemoryStore(blockManager: BlockManager, maxMemory: Long)
         val valuesOrBytes = if (deserialized) "values" else "bytes"
         logInfo("Block %s stored as %s in memory (estimated size %s, free %s)".format(
           blockId, valuesOrBytes, Utils.bytesToString(size), Utils.bytesToString(freeMemory)))
+
+        if (blockId.isRDD) {
+
+          val curValue = blockManager.blockExInfo.get(blockId)
+          curValue.size = size
+          curValue.writeFinAndCalCreatCost(System.currentTimeMillis())
+
+          // add to SortMap
+          blockManager.inMemBlockExInfo.synchronized {
+            logEarne("Add " + curValue.blockId + " to inMemBlockExInfo")
+            blockManager.inMemBlockExInfo.add(curValue)
+          }
+          logEarne("Creat Block " + blockId + "and store in memory cost " + curValue.creatCost +
+            " and normCost is " + curValue.norCost)
+          // update son's start time in par's watching list
+          var sonSet = blockManager.blockExInfo.get(blockId).sonSet
+          //          sonSet.synchronized
+          for (sonId <- sonSet) {
+            blockManager.blockExInfo.get(sonId).creatStartTime = System.currentTimeMillis()
+            logEarne("update start time of sonId " + sonId)
+          }
+          sonSet = Set()
+
+        }
+
         putSuccess = true
       } else {
         // Tell the block manager that we couldn't put it in memory so that it can drop it to
@@ -440,17 +465,37 @@ private[spark] class MemoryStore(blockManager: BlockManager, maxMemory: Long)
       // This is synchronized to ensure that the set of entries is not changed
       // (because of getValue or getBytes) while traversing the iterator, as that
       // can lead to exceptions.
-      entries.synchronized {
-        val iterator = entries.entrySet().iterator()
-        while (actualFreeMemory + selectedMemory < space && iterator.hasNext) {
-          val pair = iterator.next()
-          val blockId = pair.getKey
-          if (rddToAdd.isEmpty || rddToAdd != getRddId(blockId)) {
-            selectedBlocks += blockId
-            selectedMemory += pair.getValue.size
+//      entries.synchronized {
+//        val iterator = entries.entrySet().iterator()
+//        while (actualFreeMemory + selectedMemory < space && iterator.hasNext) {
+//          val pair = iterator.next()
+//          val blockId = pair.getKey
+//          if (rddToAdd.isEmpty || rddToAdd != getRddId(blockId)) {
+//            selectedBlocks += blockId
+//            selectedMemory += pair.getValue.size
+//          }
+//        }
+//      }
+
+
+      blockManager.inMemBlockExInfo.synchronized {
+        val setIter = blockManager.inMemBlockExInfo.iterator()
+        while (actualFreeMemory + selectedMemory < space &&  setIter.hasNext) {
+          val cur = setIter.next()
+
+          blockManager.stageExInfos.get(blockManager.currentStage) match {
+            case Some(curStageExInfo) =>
+              // cur is this stage's output RDD
+              if (!curStageExInfo.curRunningRddMap.contains(cur.blockId.getRddId)) {
+                selectedBlocks += cur.blockId
+                selectedMemory += cur.size
+              }
+            case None =>
+              logEarne("ERROR HERE")
           }
         }
       }
+
 
       if (actualFreeMemory + selectedMemory >= space) {
         logInfo(s"${selectedBlocks.size} blocks selected for dropping")
