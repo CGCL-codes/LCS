@@ -45,10 +45,10 @@ private[spark] class ShuffleMapTask(
     taskBinary: Broadcast[Array[Byte]],
     partition: Partition,
     @transient private var locs: Seq[TaskLocation],
-    _initialAccums: Seq[Accumulator[_]],
+    internalAccumulators: Seq[Accumulator[Long]],
     depMap: HashMap[Int, Set[Int]],
     curRunningRddMap: HashMap[Int, Set[Int]])
-  extends Task[MapStatus](stageId, stageAttemptId, partition.index, _initialAccums, depMap,
+  extends Task[MapStatus](stageId, stageAttemptId, partition.index, internalAccumulators, depMap,
     curRunningRddMap)
   with Logging {
 
